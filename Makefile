@@ -1,59 +1,84 @@
-# ======================================================================== #
-# author:  ixty                                                       2018 #
-# project: mandibule                                                       #
-# licence: beerware                                                        #
-# ======================================================================== #
+.PHONY: all clean mandibule
 
-# mandibule makefile
+ARCH ?= $(shell uname -m)
 
-CFLAGS 	+= -D_GNU_SOURCE -std=gnu99
-CFLAGS 	+= -static-libgcc -lgcc
-CFLAGS 	+= -I icrt/ -I code/
-CFLAGS 	+= -fno-common -fno-stack-protector -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables -fno-unwind-tables
-# CFLAGS  += -Wall -Werror -Wpedantic
-PORTABLE = -pie -fPIE -fno-builtin
-MACHINE  = $(shell uname -m)
+DEBUG ?= 1
+
+SAMPLE_CFLAGS := -Wall
+CFLAGS += -fpic -fpie -mno-sse
+CFLAGS += -fomit-frame-pointer -fno-exceptions -fno-asynchronous-unwind-tables
+CFLAGS += -fno-unwind-tables -fcf-protection=none
+CFLAGS += -Wno-invalid-noreturn -Wno-unused-command-line-argument
+
+ifneq ($(filter clang,$(CC)),)
+CFLAGS += -Oz
+else
+CFLAGS += -Os
+endif
+
+# unable to compile arm without nostdlib (uidiv divmod ...)
+ifneq ($(filter arm armhf armv7 armv7l,$(ARCH)),)
+CFLAGS += -nostartfiles
+else
+CFLAGS += -nostdlib
+endif
+
+# add -m32 so we can compile it on amd64 as well
+ifneq ($(filter i386 i486 i586 i686 x86,$(ARCH)),)
+SAMPLE_CFLAGS += -m32
+CFLAGS += -m32
+endif
+
+# as flag
+ifneq ($(filter amd64 x86_64,$(ARCH)),)
+AS_FLAGS += --64
+else ifneq ($(filter i386 i486 i586 i686 x86,$(ARCH)),)
+AS_FLAGS += --32
+endif
+
+# ld flag
+
+ifneq ($(filter amd64 x86_64,$(ARCH)),)
+LD_FLAGS += -m elf_x86_64
+else ifneq ($(filter i386 i486 i586 i686 x86,$(ARCH)),)
+LD_FLAGS += -m elf_i386
+endif
+
+ifeq ($(filter amd64 x86_64,$(ARCH)),)
+$(error "only amd64 are tested")
+endif
 
 # automaticaly target current arch
-all: $(MACHINE)
+all: clean toinject target mandibule mandibule.shellcode
 
-# PC 32 bits
-# add -m32 so we can compile it on amd64 as well
-i386: x86
-i486: x86
-i686: x86
-x86: clean
-	$(CC) $(CFLAGS) $(PORTABLE) -nostdlib -m32 -o mandibule mandibule.c
-	$(CC) $(CFLAGS) $(PORTABLE) -m32 -o toinject samples/toinject.c
-	$(CC) $(CFLAGS) -m32 -o target samples/target.c
+mandibule.s: src/mandibule.c
+	$(CC) $(CFLAGS) -DDEBUG=$(DEBUG) -S -I src/icrt/ -o $@ $<
+	sed -i 's/\.addrsig//g' $@
+	sed -i '/\.section/d' $@
+	sed -i '/\.p2align/d' $@
+	sed -i '/_sym /d' $@
+# for x86, WIP
+#	sed -i 's/_GLOBAL_OFFSET_TABLE_/_GOT_FAKE_/g' $@
+#	echo ".globl _GLOBAL_OFFSET_TABLE_" >> $@
+#	echo "_GLOBAL_OFFSET_TABLE_:" >> $@
+#	echo ".zero	1" >> $@
+#	sed -i 's/@GOTOFF/-_GLOBAL_OFFSET_TABLE_/g' $@
+#	sed -E -i "s/_GLOBAL_OFFSET_TABLE_\+\((.*)-(.*)\)/_GLOBAL_OFFSET_TABLE_-\2/g" $@
 
-# PC 64 bits
-amd64: x86_64
-x86_64: clean
-	$(CC) $(CFLAGS) $(PORTABLE) -nostdlib -o mandibule mandibule.c
-	$(CC) $(CFLAGS) $(PORTABLE) -o toinject samples/toinject.c
-	$(CC) $(CFLAGS) -o target samples/target.c
+mandibule.o: mandibule.s
+	as $(AS_FLAGS) -o $@ $<
+	rm -rf $<
 
+mandibule: mandibule.o
+	ld $(LD_FLAGS) --omagic -o mandibule.elf $<
+	ld $(LD_FLAGS) --oformat binary --omagic -o mandibule.shellcode $<
+	rm -rf $<
 
-# ARM 32 bits
-# unable to compile arm without nostdlib (uidiv divmod ...)
-arm: armv7l
-armhf: armv7l
-armv7: armv7l
-armv7l: clean
-	$(CC) $(CFLAGS) $(PORTABLE) -nostartfiles -o mandibule mandibule.c
-	$(CC) $(CFLAGS) $(PORTABLE) -o toinject samples/toinject.c
-	$(CC) $(CFLAGS) -o target samples/target.c
+toinject: samples/toinject.c
+	$(CC) $(SAMPLE_CFLAGS) -o $@ $<
 
-# ARM 64 bits
-arm64: aarch64
-armv8: aarch64
-armv8l: aarch64
-aarch64: clean
-	$(CC) $(CFLAGS) $(PORTABLE) -nostdlib -o mandibule mandibule.c
-	$(CC) $(CFLAGS) $(PORTABLE) -o toinject samples/toinject.c
-	$(CC) $(CFLAGS) -o target samples/target.c
+target: samples/target.c
+	$(CC) $(SAMPLE_CFLAGS) -o $@ $<
 
 clean:
-	rm -rf mandibule target toinject
-
+	rm -rf mandibule.s mandibule.o mandibule.elf mandibule.shellcode target toinject 
